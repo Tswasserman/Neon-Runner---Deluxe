@@ -1,5 +1,4 @@
 <!doctype html>
-
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -65,6 +64,7 @@
         <ul>
           <li><strong>Goal:</strong> reach the glowing green orb at the far right.</li>
           <li><strong>Purple tiles:</strong> teleport you — use with care.</li>
+          <li><strong>Breakable green tiles:</strong> jump on them 3 times to break (goal tile is safe).</li>
           <li><strong>Dash:</strong> hold momentum for comet trails and combos.</li>
         </ul>
       </div>
@@ -89,7 +89,6 @@
     </div>
 
     <div id="touchControls" class="touch-controls">
-      
       <button data-key="Space" class="touch-btn">⭡</button>
       <button data-key="ShiftLeft" class="touch-btn">Dash</button>
       <button data-key="ArrowLeft" class="touch-btn">◀</button>
@@ -184,7 +183,9 @@
     let running = false, gameStarted = false, levelCleared = false;
     let stageCounter = 0, lives = 5, score = 0;
     const TILE = 32;
-    const level = { width: 180, height: 24, tiles: [], spawn: {x:2*TILE,y:2*TILE}, goalBox:{x:0,y:0,w:0,h:0} };
+    // level.tiles uses numbers:
+    // 0 = empty; 1 = solid; 2 = hazard (teleport); 3 = goal (unbreakable); 4 = breakable green
+    const level = { width: 180, height: 24, tiles: [], spawn: {x:2*TILE,y:2*TILE}, goalBox:{x:0,y:0,w:0,h:0}, breakHits: {}, lastHitFrame: {} };
 
     // performance config + accents
     const config = {
@@ -223,29 +224,130 @@
 
     function getDifficulty(n){const cycle = n % 6; if(cycle<2) return 0; if(cycle<4) return 5; return 9}
 
-    function genLevel(width,height,difficulty){
-      const tiles = Array.from({length:height},()=>Array(width).fill(0));
-      const rng = mulberry32(1000 + difficulty*1337 + Math.floor(Math.random()*1e6));
-      const groundY = height-3;
-      const gapChance = clamp(0.05 + difficulty*0.02, 0.05, 0.26);
-      for(let x=0;x<width;x++){ if(rng()<gapChance && x>10 && x<width-12){} else { tiles[groundY][x]=1; if(tiles[groundY+1]) tiles[groundY+1][x]=1 }}
-      const platformCount = Math.floor(60 - difficulty*3);
-      for(let i=0;i<platformCount;i++){ const len = Math.floor(2 + rng()*(6 - difficulty*0.3)); const px = Math.floor(rng()*(width-len-6))+3; const py = Math.floor(rng()*(height-10))+5+Math.floor(difficulty*0.5); for(let k=0;k<len;k++) tiles[py][clamp(px+k,1,width-2)]=1; if(rng() < (0.15 + difficulty*0.04)) { const hx = clamp(px + Math.floor(len/2),1,width-2); tiles[py-1][hx]=2 } }
-      const pillarCount = Math.floor(8 + difficulty*2);
-      for(let i=0;i<pillarCount;i++){ const px = Math.floor(rng()*(width-6))+3; const baseY = Math.floor(rng()*6) + (groundY-6); for(let j=0;j<4;j++) tiles[baseY-j][px]=1; if(rng()<0.32) tiles[baseY-4][px]=2 }
-      const gx = width - 8; const gy = groundY - 2; for(let k=0;k<6;k++) tiles[gy][gx+k]=1; tiles[gy-1][gx+2]=3;
-      const boxW = 4, boxH=3; for(let by=0;by<boxH;by++){ for(let bx=0;bx<boxW;bx++){ const wx=gx+bx, wy=gy-1+by; const edge = by===0||by===boxH-1||bx===0||bx===boxW-1; if(edge && tiles[wy][wx]!==3) tiles[wy][wx]=4 }}
-      level.goalBox = { x: gx*TILE, y: (gy-1)*TILE, w: boxW*TILE, h: boxH*TILE };
-      level.spawn = { x: TILE*2, y: TILE*(groundY-4) };
+    // --- Level generation (now sets breakable blocks and strong walls by spawn/goal) ---
+    function genLevel(width, height, difficulty) {
+      const tiles = Array.from({ length: height }, () => Array(width).fill(0));
+      const rng = mulberry32(1000 + difficulty * 1337 + Math.floor(Math.random() * 1e6));
+      const groundY = height - 3;
+      const gapChance = clamp(0.05 + difficulty * 0.02, 0.05, 0.26);
+
+      // ground
+      for (let x = 0; x < width; x++) {
+        if (rng() < gapChance && x > 10 && x < width - 12) {
+          // leave gap
+        } else {
+          tiles[groundY][x] = 1;
+          if (tiles[groundY + 1]) tiles[groundY + 1][x] = 1;
+        }
+      }
+
+      // random platforms
+      const platformCount = Math.floor(60 - difficulty * 3);
+      for (let i = 0; i < platformCount; i++) {
+        const len = Math.floor(2 + rng() * (6 - difficulty * 0.3));
+        const px = Math.floor(rng() * (width - len - 6)) + 3;
+        const py = Math.floor(rng() * (height - 10)) + 5 + Math.floor(difficulty * 0.5);
+        for (let k = 0; k < len; k++) {
+          tiles[py][clamp(px + k, 1, width - 2)] = 1;
+        }
+        if (rng() < (0.15 + difficulty * 0.04)) {
+          const hx = clamp(px + Math.floor(len / 2), 1, width - 2);
+          // sometimes spawn hazard above platform
+          tiles[py - 1][hx] = 2;
+        }
+      }
+
+      // pillars
+      const pillarCount = Math.floor(8 + difficulty * 2);
+      for (let i = 0; i < pillarCount; i++) {
+        const px = Math.floor(rng() * (width - 6)) + 3;
+        const baseY = Math.floor(rng() * 6) + (groundY - 6);
+        for (let j = 0; j < 4; j++) tiles[baseY - j][px] = 1;
+        if (rng() < 0.32) tiles[baseY - 4][px] = 2;
+      }
+
+      // goal area (unbreakable goal tile type = 3)
+      const gx = width - 8;
+      const gy = groundY - 2;
+      for (let k = 0; k < 6; k++) tiles[gy][gx + k] = 1;
+      tiles[gy - 1][gx + 2] = 3;
+
+      // small green "breakable" box around goal (visual frame) - interior tiles are breakable (4)
+      const boxW = 4, boxH = 3;
+      for (let by = 0; by < boxH; by++) {
+        for (let bx = 0; bx < boxW; bx++) {
+          const wx = gx + bx, wy = gy - 1 + by;
+          const edge = by === 0 || by === boxH - 1 || bx === 0 || bx === boxW - 1;
+          if (edge && tiles[wy][wx] !== 3) tiles[wy][wx] = 4; // breakable border (but goal (3) remains)
+        }
+      }
+
+      // stronger side walls by spawn & goal to avoid impossible sections
+      for (let y = 0; y < height; y++) {
+        tiles[y][0] = 1;
+        tiles[y][1] = 1; // left double wall
+        tiles[y][width - 1] = 1;
+        tiles[y][width - 2] = 1; // right double wall
+      }
+
+      // ensure extra walls close to spawn and goal (columns)
+      const spawnCol = 2;
+      for (let y = groundY - 10; y < height; y++) {
+        if (y >= 0 && y < height) tiles[y][spawnCol] = 1;
+      }
+      const goalCol = width - 3;
+      for (let y = groundY - 10; y < height; y++) {
+        if (y >= 0 && y < height) tiles[y][goalCol] = 1;
+      }
+
+      // initialize breakHits map (used by breakable blocks)
+      level.breakHits = {};
+      level.lastHitFrame = {};
+
+      // randomly sprinkle some breakable blocks across platforms to help passage (not the goal)
+      for (let y = 4; y < height - 4; y++) {
+        for (let x = 3; x < width - 3; x++) {
+          if (tiles[y][x] === 1 && Math.random() < 0.02) {
+            // replace some solid blocks with breakable variant
+            tiles[y][x] = 4;
+          }
+        }
+      }
+
+      level.goalBox = { x: gx * TILE, y: (gy - 1) * TILE, w: boxW * TILE, h: boxH * TILE };
+      level.spawn = { x: TILE * 2, y: TILE * (groundY - 4) };
+
       return tiles;
     }
 
     // tile helpers
     function tileAt(x,y){ const tx=Math.floor(x/TILE), ty=Math.floor(y/TILE); if(tx<0||ty<0||tx>=level.width||ty>=level.height) return 0; return level.tiles[ty]?.[tx] ?? 0 }
-    function rectVsLevel(x,y,w,h){ const left=Math.floor(x/TILE), right=Math.floor((x+w)/TILE); const top=Math.floor(y/TILE), bottom=Math.floor((y+h)/TILE); const hits=[]; for(let ty=top;ty<=bottom;ty++){ for(let tx=left;tx<=right;tx++){ if(tx<0||ty<0||tx>=level.width||ty>=level.height) continue; const t = level.tiles[ty]?.[tx] ?? 0; if(t===1||t===4) hits.push({tx,ty,kind:'solid'}); else if(t===2) hits.push({tx,ty,kind:'hazard'}); else if(t===3) hits.push({tx,ty,kind:'goal'}); }} return hits }
+    function rectVsLevel(x,y,w,h){
+      const left=Math.floor(x/TILE), right=Math.floor((x+w)/TILE);
+      const top=Math.floor(y/TILE), bottom=Math.floor((y+h)/TILE);
+      const hits=[];
+      for(let ty=top;ty<=bottom;ty++){
+        for(let tx=left;tx<=right;tx++){
+          if(tx<0||ty<0||tx>=level.width||ty>=level.height) continue;
+          const t = level.tiles[ty]?.[tx] ?? 0;
+          if(t===1) hits.push({tx,ty,kind:'solid'});
+          else if(t===4) hits.push({tx,ty,kind:'breakable'});
+          else if(t===2) hits.push({tx,ty,kind:'hazard'});
+          else if(t===3) hits.push({tx,ty,kind:'goal'});
+        }
+      }
+      return hits;
+    }
 
     // player
-     const player = {x:TILE*2,y:TILE*2,w:22,h:30,vx:0,vy:0,onGround:false,onWall:0,facing:1,moveAccel:2200,maxRun:360,airAccel:1400,friction:2400,gravity:2400,jumpVel:-720,doubleJump:true,coyoteTime:0,jumpBuffer:0,dashReady:true,dashTimer:0,dashCd:600,dashSpeed:780,trail:[],color:config.accent1,squash:0 };
+    const player = {
+      x:TILE*2,y:TILE*2,w:22,h:30,
+      vx:0,vy:0,onGround:false,onWall:0,facing:1,
+      moveAccel:2200,maxRun:360,airAccel:1400,friction:2400,
+      gravity:2400,jumpVel:-720,doubleJump:true,coyoteTime:0,jumpBuffer:0,
+      dashReady:true,dashTimer:0,dashCd:600,dashSpeed:780,trail:[],color:config.accent1,squash:0,
+      dashing:false
+    };
 
     // particles
     const particles = [];
@@ -260,12 +362,21 @@
     const stars = Array.from({ length: config.starCount }, ()=>({ x: Math.random() * (level.width * TILE), y: Math.random() * (level.height * TILE), r: Math.random()*1.8 + 0.5, c: Math.random() < 0.6 ? config.accent1 : config.accent2, tw: Math.random()*9000 + 1000 }))
 
     function spawnJumpFX(color = player.color){ for(let i=0;i<20;i++){ const ang=(i/20)*Math.PI*2; spawnParticle(player.x + player.w/2, player.y + player.h, { vx: Math.cos(ang)*(120+Math.random()*60), vy: Math.sin(ang)*(120+Math.random()*60), life: 340, color, size: 2 + Math.random()*2 }) } player.squash = 0.24 }
-    function spawnDashTrail(){ player.trail.push({ x: player.x + player.w/2, y: player.y + player.h/2, t: 0 }); if(player.trail.length > 50) player.trail.shift(); for(let i=0;i<6;i++) spawnParticle(player.x + player.w/2, player.y + player.h/2, { life: 220, size: 1.6, color: config.accent2 }) }
+    function spawnDashTrail(){ player.trail.push({ x: player.x + player.w/2, y: player.y + player.h/2, t: 0 }); if(player.trail.length > 60) player.trail.shift(); for(let i=0;i<6;i++) spawnParticle(player.x + player.w/2, player.y + player.h/2, { life: 220, size: 1.6, color: config.accent2 }) }
     function landDust(){ for(let i=0;i<12;i++) spawnParticle(player.x + player.w/2, player.y + player.h, { vx:(Math.random()*180-90), vy: Math.random()*-220, life: 300, size:2, color: config.accent3 }); player.squash = -0.2 }
     function speedLines(){ if(Math.abs(player.vx) > 420){ for(let i=0;i<2;i++){ spawnParticle(player.x + player.w/2 + (player.facing*8), player.y + player.h/2, { vx: -player.facing*(160 + Math.random()*60), vy: Math.random()*40 - 20, life: 140, size: 2, color: config.accent1 }) } } }
 
     // reset / progression
-    function resetPlayer(spawn = level.spawn, loseLife = true){ if(loseLife){ lives--; if(lives <= 0){ gameOverScreen(); return } else { toast(`You fell! Lives: ${lives}`) } } player.x = spawn.x; player.y = spawn.y; player.vx = 0; player.vy = 0; player.onGround = false; player.onWall = 0; player.doubleJump = true; player.dashReady = true; player.dashTimer = 0; player.trail.length = 0; updateHUD(); }
+    function resetPlayer(spawn = level.spawn, loseLife = true){
+      if(loseLife){
+        lives--;
+        if(lives <= 0){ gameOverScreen(); return }
+        else { toast(`You fell! Lives: ${lives}`) }
+      }
+      player.x = spawn.x; player.y = spawn.y; player.vx = 0; player.vy = 0;
+      player.onGround = false; player.onWall = 0; player.doubleJump = true; player.dashReady = true; player.dashTimer = 0;
+      player.trail.length = 0; updateHUD();
+    }
 
     function stageWon(){ if(!gameStarted || !running || !levelCleared) return; lives = Math.min(lives + 1, 9); score += 150 + Math.floor((stageCounter + 1) * 30); stageMsg.textContent = `Stage ${stageCounter + 1} cleared — Lives: ${lives} • Score: ${score}`; nextBtn.textContent = 'Next'; show(winScreen); saveHighScore(score); running = false }
     function goToNextStage(){ levelCleared = false; stageCounter++; level.tiles = genLevel(level.width, level.height, getDifficulty(stageCounter)); resetPlayer(level.spawn, false); hide(winScreen); running = true; last = now(); loop() }
@@ -277,23 +388,164 @@
     backBtn.addEventListener('click', ()=>{ hide(gameOver); show(menu); hud.style.display='none'; canvas.classList.add('hidden'); running=false; gameStarted=false })
 
     // teleport hazards
-    function teleportToSafe(){ let safeX, safeY, tries=0; do{ safeX = Math.floor(Math.random() * level.width) * TILE; safeY = Math.floor(Math.random() * (level.height - 6)) * TILE; tries++; if(tries > 500){ safeX = level.spawn.x; safeY = level.spawn.y; break } } while(tileAt(safeX, safeY) !== 0); player.x = safeX; player.y = safeY; player.vx = 0; player.vy = 0 }
+    function teleportToSafe(){
+      let safeX, safeY, tries=0;
+      do{
+        safeX = Math.floor(Math.random() * level.width) * TILE;
+        safeY = Math.floor(Math.random() * (level.height - 6)) * TILE;
+        tries++;
+        if(tries > 500){
+          safeX = level.spawn.x;
+          safeY = level.spawn.y;
+          break;
+        }
+      } while(tileAt(safeX, safeY) !== 0);
+      player.x = safeX; player.y = safeY; player.vx = 0; player.vy = 0;
+    }
 
     // input
-    function handleInput(dt){ const left = keys.has('ArrowLeft') || keys.has('KeyA'); const right = keys.has('ArrowRight') || keys.has('KeyD'); const jumpPressed = keyOnce.has('Space'); const jumpHeld = keys.has('Space'); const dashPressed = keyOnce.has('ShiftLeft') || keyOnce.has('ShiftRight'); keyOnce.clear(); if(jumpPressed) player.jumpBuffer = 130; else player.jumpBuffer = Math.max(0, player.jumpBuffer - dt); const dir = (left ? -1 : 0) + (right ? 1 : 0); if(dir !== 0) player.facing = dir; const accel = player.onGround ? player.moveAccel : player.airAccel; player.vx += dir * accel * (dt/1000); if(dir === 0 && player.onGround && player.dashTimer <= 0){ const sign = Math.sign(player.vx); const mag = Math.max(0, Math.abs(player.vx) - player.friction * (dt/1000)); player.vx = mag * sign } if(player.dashTimer <= 0) player.vx = clamp(player.vx, -player.maxRun, player.maxRun); if(player.dashTimer <= 0){ const g = jumpHeld && player.vy < 0 ? player.gravity * 0.6 : player.gravity; player.vy += g * (dt/1000) } const canJump = player.onGround || player.coyoteTime > 0 || player.onWall !== 0; if(player.jumpBuffer > 0 && canJump){ if(player.onWall !== 0 && !player.onGround){ player.vy = player.jumpVel * 0.92; player.vx = -player.onWall * (player.maxRun * 0.9); spawnJumpFX(); playSfx('jump') } else { player.vy = player.jumpVel; spawnJumpFX(); playSfx('jump') } player.onGround = false; player.coyoteTime = 0; player.jumpBuffer = 0; player.doubleJump = true } else if(player.jumpBuffer > 0 && !player.onGround && player.doubleJump){ player.vy = player.jumpVel * 0.9; player.doubleJump = false; spawnJumpFX(config.accent2); player.jumpBuffer = 0; playSfx('jump2') }
+    function handleInput(dt){
+      const left = keys.has('ArrowLeft') || keys.has('KeyA');
+      const right = keys.has('ArrowRight') || keys.has('KeyD');
+      const jumpPressed = keyOnce.has('Space');
+      const jumpHeld = keys.has('Space');
+      const dashPressed = keyOnce.has('ShiftLeft') || keyOnce.has('ShiftRight');
+      keyOnce.clear();
+      if(jumpPressed) player.jumpBuffer = 130; else player.jumpBuffer = Math.max(0, player.jumpBuffer - dt);
+      const dir = (left ? -1 : 0) + (right ? 1 : 0);
+      if(dir !== 0) player.facing = dir;
+      const accel = player.onGround ? player.moveAccel : player.airAccel;
+      player.vx += dir * accel * (dt/1000);
+      if(dir === 0 && player.onGround && player.dashTimer <= 0){
+        const sign = Math.sign(player.vx);
+        const mag = Math.max(0, Math.abs(player.vx) - player.friction * (dt/1000));
+        player.vx = mag * sign;
+      }
+      if(player.dashTimer <= 0) player.vx = clamp(player.vx, -player.maxRun, player.maxRun);
+      if(player.dashTimer <= 0){
+        const g = jumpHeld && player.vy < 0 ? player.gravity * 0.6 : player.gravity;
+        player.vy += g * (dt/1000);
+      }
+      const canJump = player.onGround || player.coyoteTime > 0 || player.onWall !== 0;
+      if(player.jumpBuffer > 0 && canJump){
+        if(player.onWall !== 0 && !player.onGround){
+          player.vy = player.jumpVel * 0.92;
+          player.vx = -player.onWall * (player.maxRun * 0.9);
+          spawnJumpFX(); playSfx('jump');
+        } else {
+          player.vy = player.jumpVel; spawnJumpFX(); playSfx('jump');
+        }
+        player.onGround = false; player.coyoteTime = 0; player.jumpBuffer = 0; player.doubleJump = true;
+      } else if(player.jumpBuffer > 0 && !player.onGround && player.doubleJump){
+        player.vy = player.jumpVel * 0.9; player.doubleJump = false; spawnJumpFX(config.accent2); player.jumpBuffer = 0; playSfx('jump2');
+      }
 
       // Dash
-      if(dashPressed && player.dashReady && player.dashTimer <= 0){ const dirX = dir !== 0 ? dir : player.facing; player.dashTimer = 140; player.dashReady = false; player.vx = dirX * player.dashSpeed; player.vy = 0; spawnDashTrail(); playSfx('dash'); setTimeout(()=>player.dashReady = true, player.dashCd) }
-      if(player.dashTimer > 0){ player.dashTimer -= dt; spawnDashTrail() }
+      if(dashPressed && player.dashReady && player.dashTimer <= 0){
+        const dirX = dir !== 0 ? dir : player.facing;
+        player.dashTimer = 140;
+        player.dashReady = false;
+        player.vx = dirX * player.dashSpeed;
+        player.vy = 0;
+        player.dashing = true;
+        spawnDashTrail(); playSfx('dash');
+        setTimeout(()=>{ player.dashReady = true; }, player.dashCd);
+      }
+      if(player.dashTimer > 0){ player.dashTimer -= dt; spawnDashTrail(); } else { player.dashing = false; }
       speedLines();
     }
 
     // physics
-    function physics(dt){ const px = player; const prevX = px.x; px.x += px.vx * (dt/1000); let hits = rectVsLevel(px.x, px.y, px.w, px.h); let collidedX = false; for(const h of hits){ if(h.kind === 'solid'){ const tx=h.tx*TILE, ty=h.ty*TILE; const prevPosX = prevX; const tileRect = {x:tx,y:ty,w:TILE,h:TILE}; if(prevPosX + px.w <= tileRect.x){ px.x = tileRect.x - px.w - 0.01; collidedX=true; px.vx = Math.min(px.vx,0); px.onWall = 1 } else if(prevPosX >= tileRect.x + tileRect.w){ px.x = tileRect.x + tileRect.w + 0.01; collidedX=true; px.vx = Math.max(px.vx,0); px.onWall = -1 } } else if(h.kind === 'hazard'){ teleportToSafe(); toast('Purple warp!'); playSfx('warp'); return } else if(h.kind === 'goal'){ if(running && gameStarted){ levelCleared=true; stageWon() } return } }
+    let frameCounter = 0;
+    function physics(dt){
+      frameCounter++;
+      const px = player;
+      const prevX = px.x;
+      px.x += px.vx * (dt/1000);
+      let hits = rectVsLevel(px.x, px.y, px.w, px.h);
+      let collidedX = false;
+      for(const h of hits){
+        if(h.kind === 'solid' || h.kind === 'breakable'){
+          const tx=h.tx*TILE, ty=h.ty*TILE;
+          const prevPosX = prevX;
+          const tileRect = {x:tx,y:ty,w:TILE,h:TILE};
+          if(prevPosX + px.w <= tileRect.x){
+            // hit from left
+            px.x = tileRect.x - px.w - 0.01;
+            collidedX=true; px.vx = Math.min(px.vx,0); px.onWall = 1;
+          } else if(prevPosX >= tileRect.x + tileRect.w){
+            // hit from right
+            px.x = tileRect.x + tileRect.w + 0.01;
+            collidedX=true; px.vx = Math.max(px.vx,0); px.onWall = -1;
+          }
+        } else if(h.kind === 'hazard'){
+          teleportToSafe(); toast('Purple warp!'); playSfx('warp'); return;
+        } else if(h.kind === 'goal'){
+          if(running && gameStarted){ levelCleared=true; stageWon() } return;
+        }
+      }
       if(!collidedX) px.onWall = 0;
 
       // vertical
-      const prevY = px.y; const prevOnGround = px.onGround; px.y += px.vy * (dt/1000); hits = rectVsLevel(px.x, px.y, px.w, px.h); px.onGround = false; for(const h of hits){ if(h.kind === 'solid'){ const tx=h.tx*TILE, ty=h.ty*TILE; const tileRect = {x:tx,y:ty,w:TILE,h:TILE}; const prevPosY = prevY; if(prevPosY + px.h <= tileRect.y){ px.y = tileRect.y - px.h - 0.01; px.vy = Math.min(px.vy,0); if(!px.onGround){ px.onGround = true; px.doubleJump = true; landDust(); playSfx('land') } } else if(prevPosY >= tileRect.y + tileRect.h){ px.y = tileRect.y + tileRect.h + 0.01; px.vy = Math.max(px.vy,0) } } else if(h.kind === 'hazard'){ teleportToSafe(); toast('Purple warp!'); playSfx('warp'); return } else if(h.kind === 'goal'){ if(running && gameStarted){ levelCleared=true; stageWon() } return } }
+      const prevY = px.y;
+      const prevOnGround = px.onGround;
+      px.y += px.vy * (dt/1000);
+      hits = rectVsLevel(px.x, px.y, px.w, px.h);
+      px.onGround = false;
+      for(const h of hits){
+        if(h.kind === 'solid'){
+          const tx=h.tx*TILE, ty=h.ty*TILE;
+          const tileRect = {x:tx,y:ty,w:TILE,h:TILE};
+          const prevPosY = prevY;
+          if(prevPosY + px.h <= tileRect.y){
+            // landed on top
+            px.y = tileRect.y - px.h - 0.01;
+            px.vy = Math.min(px.vy,0);
+            if(!px.onGround){ px.onGround = true; px.doubleJump = true; landDust(); playSfx('land'); }
+          } else if(prevPosY >= tileRect.y + tileRect.h){
+            // hit head
+            px.y = tileRect.y + tileRect.h + 0.01; px.vy = Math.max(px.vy,0);
+          }
+        } else if(h.kind === 'breakable'){
+          const tx=h.tx*TILE, ty=h.ty*TILE;
+          const tileRect = {x:tx,y:ty,w:TILE,h:TILE};
+          const prevPosY = prevY;
+          if(prevPosY + px.h <= tileRect.y){
+            // landed on top of a breakable tile -> count as a hit
+            px.y = tileRect.y - px.h - 0.01;
+            px.vy = Math.min(px.vy,0);
+            if(!px.onGround){ px.onGround = true; px.doubleJump = true; landDust(); playSfx('land'); }
+            // increase hit count but only once per landing (use frameCounter)
+            const key = `${h.tx},${h.ty}`;
+            if(level.lastHitFrame[key] !== frameCounter){
+              level.lastHitFrame[key] = frameCounter;
+              level.breakHits[key] = (level.breakHits[key] || 0) + 1;
+              // visual/particle feedback
+              spawnParticle(tx + TILE/2, ty + TILE/2, { life: 260, size: 3, color: config.accent3, vx: 0, vy: -90 });
+              // crack flash
+              toast(`Block cracked (${level.breakHits[key]}/3)`, 700);
+              playSfx('land');
+              if(level.breakHits[key] >= 3){
+                // destroy block with a burst
+                level.tiles[h.ty][h.tx] = 0;
+                delete level.breakHits[key];
+                delete level.lastHitFrame[key];
+                for(let i=0;i<14;i++){
+                  spawnParticle(tx + Math.random()*TILE, ty + Math.random()*TILE, { vx: (Math.random()-0.5)*520, vy: (Math.random()-0.9)*280, life: 520, size: 2 + Math.random()*2, color: config.accent3 });
+                }
+                toast('Block destroyed', 900);
+              }
+            }
+          } else if(prevPosY >= tileRect.y + tileRect.h){
+            // head hit on breakable block -> optional behavior (bounce)
+            px.y = tileRect.y + tileRect.h + 0.01; px.vy = Math.max(px.vy,0);
+          }
+        } else if(h.kind === 'hazard'){
+          teleportToSafe(); toast('Purple warp!'); playSfx('warp'); return;
+        } else if(h.kind === 'goal'){
+          if(running && gameStarted){ levelCleared=true; stageWon() } return;
+        }
+      }
 
       if(prevOnGround && !px.onGround) px.coyoteTime = 120; else px.coyoteTime = Math.max(0, px.coyoteTime - dt);
       if(px.onWall !== 0 && !px.onGround && px.vy > 0 && px.dashTimer <= 0) px.vy = Math.min(px.vy, 250);
@@ -303,77 +555,211 @@
 
     // camera
     const camera = { x:0,y:0,shake:0,shakeT:0,apply(){ ctx.setTransform(1,0,0,1,0,0); ctx.translate(Math.floor(-this.x), Math.floor(-this.y)) }}
-    function applyCamera(dt){ const targetX = player.x + player.w/2 - canvas.width/2 / (config.dpr); const targetY = player.y + player.h/2 - canvas.height/2 / (config.dpr); camera.x = lerp(camera.x, targetX, easeOut(0.12)); camera.y = lerp(camera.y, targetY, easeOut(0.12)); camera.x = clamp(camera.x, 0, level.width*TILE - canvas.width); camera.y = clamp(camera.y, 0, level.height*TILE - canvas.height); if(camera.shakeT > 0){ camera.shakeT -= dt; const s = camera.shake * (camera.shakeT / 200); camera.x += (Math.random()*2 - 1) * s; camera.y += (Math.random()*2 - 1) * s } }
+    function applyCamera(dt){
+      const targetX = player.x + player.w/2 - canvas.width/2 / (config.dpr);
+      const targetY = player.y + player.h/2 - canvas.height/2 / (config.dpr);
+      camera.x = lerp(camera.x, targetX, easeOut(0.12));
+      camera.y = lerp(camera.y, targetY, easeOut(0.12));
+      camera.x = clamp(camera.x, 0, level.width*TILE - canvas.width);
+      camera.y = clamp(camera.y, 0, level.height*TILE - canvas.height);
+      if(camera.shakeT > 0){
+        camera.shakeT -= dt;
+        const s = camera.shake * (camera.shakeT / 200);
+        camera.x += (Math.random()*2 - 1) * s;
+        camera.y += (Math.random()*2 - 1) * s;
+      }
+    }
 
     // rendering
-    function drawBackground(){ // deep cosmic gradient + aurora bands + stars
-      ctx.fillStyle = '#030516'; ctx.fillRect(camera.x, camera.y, canvas.width, canvas.height);
+    function drawBackground(){
+      // deep cosmic gradient + aurora bands + stars
+      ctx.fillStyle = '#030516';
+      ctx.fillRect(camera.x, camera.y, canvas.width, canvas.height);
       const g = ctx.createLinearGradient(0, camera.y, 0, camera.y + canvas.height);
-      g.addColorStop(0, 'rgba(20,8,40,0.75)'); g.addColorStop(0.5, 'rgba(6,8,30,0.6)'); g.addColorStop(1, 'rgba(2,2,12,0.95)');
+      g.addColorStop(0, 'rgba(20,8,40,0.75)');
+      g.addColorStop(0.5, 'rgba(6,8,30,0.6)');
+      g.addColorStop(1, 'rgba(2,2,12,0.95)');
       ctx.fillStyle = g; ctx.fillRect(camera.x, camera.y, canvas.width, canvas.height);
 
       // aurora layers
-      ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.22; const time = performance.now()/1000; for(let i=0;i<3;i++){ const amp = 120 + i*40; const speed = 0.06 + i*0.02; const y = (Math.sin(time * speed + i) * 40) + (canvas.height*0.15) + i*60; const grad = ctx.createLinearGradient(0, y-120, 0, y+120); grad.addColorStop(0, 'rgba(255,93,240,0.04)'); grad.addColorStop(0.5, 'rgba(73,240,255,0.06)'); grad.addColorStop(1, 'rgba(112,255,97,0.02)'); ctx.fillStyle = grad; ctx.beginPath(); ctx.ellipse(camera.x + (Math.sin(time*0.12+i)*120), camera.y + y, canvas.width*0.7, amp, 0, 0, Math.PI*2); ctx.fill(); } ctx.restore();
+      ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.22; const time = performance.now()/1000;
+      for(let i=0;i<3;i++){
+        const amp = 120 + i*40; const speed = 0.06 + i*0.02;
+        const y = (Math.sin(time * speed + i) * 40) + (canvas.height*0.15) + i*60;
+        const grad = ctx.createLinearGradient(0, y-120, 0, y+120);
+        grad.addColorStop(0, 'rgba(255,93,240,0.04)');
+        grad.addColorStop(0.5, 'rgba(73,240,255,0.06)');
+        grad.addColorStop(1, 'rgba(112,255,97,0.02)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.ellipse(camera.x + (Math.sin(time*0.12+i)*120), camera.y + y, canvas.width*0.7, amp, 0, 0, Math.PI*2);
+        ctx.fill();
+      }
+      ctx.restore();
 
       // stars
-      for(const s of stars){ const sx = s.x - camera.x * 0.12; const sy = s.y - camera.y * 0.12; const tw = (Math.sin((performance.now()%s.tw)/s.tw * Math.PI*2) * 0.5 + 0.5); ctx.globalAlpha = 0.9 * tw; ctx.beginPath(); ctx.arc(sx, sy, s.r, 0, Math.PI*2); ctx.fillStyle = s.c; ctx.fill(); } ctx.globalAlpha = 1;
+      for(const s of stars){
+        const sx = s.x - camera.x * 0.12;
+        const sy = s.y - camera.y * 0.12;
+        const tw = (Math.sin((performance.now()%s.tw)/s.tw * Math.PI*2) * 0.5 + 0.5);
+        ctx.globalAlpha = 0.9 * tw; ctx.beginPath(); ctx.arc(sx, sy, s.r, 0, Math.PI*2); ctx.fillStyle = s.c; ctx.fill();
+      }
+      ctx.globalAlpha = 1;
     }
 
-    function drawLevel(){ for(let y=0;y<level.height;y++){ for(let x=0;x<level.width;x++){ const t = level.tiles[y]?.[x] ?? 0; if(t===0) continue; const px = x*TILE, py = y*TILE; if(t===1){ ctx.fillStyle='rgba(255,255,255,0.02)'; ctx.fillRect(px,py,TILE,TILE); ctx.strokeStyle='rgba(73,240,255,0.35)'; ctx.lineWidth = 1.6; ctx.strokeRect(px+1,py+1,TILE-2,TILE-2); const gg = ctx.createLinearGradient(px,py,px,py+TILE); gg.addColorStop(0,'rgba(112,255,97,0.04)'); gg.addColorStop(1,'rgba(73,240,255,0.02)'); ctx.fillStyle=gg; ctx.fillRect(px+2,py+2,TILE-4,TILE-4); } else if(t===2){ ctx.fillStyle='rgba(255,93,240,0.05)'; ctx.fillRect(px,py,TILE,TILE); ctx.strokeStyle= 'rgba(255,93,240,0.9)'; ctx.lineWidth=1.8; ctx.strokeRect(px+1,py+1,TILE-2,TILE-2); ctx.fillStyle='#ff5df0'; ctx.beginPath(); ctx.moveTo(px+TILE*0.2,py+TILE*0.8); ctx.lineTo(px+TILE*0.5,py+TILE*0.4); ctx.lineTo(px+TILE*0.8,py+TILE*0.8); ctx.fill(); } else if(t===3){ ctx.strokeStyle= 'rgba(112,255,97,0.95)'; ctx.lineWidth=2; ctx.strokeRect(px+4,py+4,TILE-8,TILE-8); ctx.beginPath(); ctx.arc(px+TILE/2,py+TILE/2,8,0,Math.PI*2); ctx.fillStyle='#70ff61'; ctx.fill(); ctx.globalAlpha = 0.16; ctx.beginPath(); ctx.arc(px+TILE/2,py+TILE/2,20,0,Math.PI*2); ctx.fill(); ctx.globalAlpha = 1.0; } else if(t===4){ ctx.strokeStyle='rgba(112,255,97,0.45)'; ctx.lineWidth=1.6; ctx.strokeRect(px+1,py+1,TILE-2,TILE-2) } } } }
+    function drawLevel(){
+      for(let y=0;y<level.height;y++){
+        for(let x=0;x<level.width;x++){
+          const t = level.tiles[y]?.[x] ?? 0;
+          if(t===0) continue;
+          const px = x*TILE, py = y*TILE;
+          if(t===1){
+            ctx.fillStyle='rgba(255,255,255,0.02)'; ctx.fillRect(px,py,TILE,TILE);
+            ctx.strokeStyle='rgba(73,240,255,0.35)'; ctx.lineWidth = 1.6; ctx.strokeRect(px+1,py+1,TILE-2,TILE-2);
+            const gg = ctx.createLinearGradient(px,py,px,py+TILE);
+            gg.addColorStop(0,'rgba(112,255,97,0.04)'); gg.addColorStop(1,'rgba(73,240,255,0.02)');
+            ctx.fillStyle=gg; ctx.fillRect(px+2,py+2,TILE-4,TILE-4);
+          } else if(t===2){
+            ctx.fillStyle='rgba(255,93,240,0.05)'; ctx.fillRect(px,py,TILE,TILE);
+            ctx.strokeStyle= 'rgba(255,93,240,0.9)'; ctx.lineWidth=1.8; ctx.strokeRect(px+1,py+1,TILE-2,TILE-2);
+            ctx.fillStyle='#ff5df0'; ctx.beginPath();
+            ctx.moveTo(px+TILE*0.2,py+TILE*0.8); ctx.lineTo(px+TILE*0.5,py+TILE*0.4); ctx.lineTo(px+TILE*0.8,py+TILE*0.8); ctx.fill();
+          } else if(t===3){
+            // goal (unbreakable)
+            ctx.strokeStyle= 'rgba(112,255,97,0.95)'; ctx.lineWidth=2; ctx.strokeRect(px+4,py+4,TILE-8,TILE-8);
+            ctx.beginPath(); ctx.arc(px+TILE/2,py+TILE/2,8,0,Math.PI*2); ctx.fillStyle='#70ff61'; ctx.fill();
+            ctx.globalAlpha = 0.16; ctx.beginPath(); ctx.arc(px+TILE/2,py+TILE/2,20,0,Math.PI*2); ctx.fill(); ctx.globalAlpha = 1.0;
+          } else if(t===4){
+            // breakable block
+            ctx.fillStyle='rgba(112,255,97,0.03)'; ctx.fillRect(px,py,TILE,TILE);
+            ctx.strokeStyle='rgba(112,255,97,0.45)'; ctx.lineWidth=1.6; ctx.strokeRect(px+1,py+1,TILE-2,TILE-2);
 
-function drawPlayer() {
-  if (!isFinite(player.x) || !isFinite(player.y)) return;
+            // show cracks based on hit count
+            const key = `${x},${y}`;
+            const hits = level.breakHits[key] || 0;
+            // subtle crack overlay: more hits -> more visible
+            ctx.save();
+            ctx.globalAlpha = 0.12 + (hits / 3) * 0.6;
+            ctx.beginPath();
+            // draw a simple crack pattern that escalates with hits
+            ctx.moveTo(px + TILE*0.15, py + TILE*0.5);
+            ctx.lineTo(px + TILE*0.35 + hits*2, py + TILE*0.35);
+            ctx.lineTo(px + TILE*0.55, py + TILE*0.55 + hits*3);
+            ctx.lineTo(px + TILE*0.75, py + TILE*0.4);
+            ctx.strokeStyle = 'rgba(10,10,10,0.55)';
+            ctx.lineWidth = 1 + hits * 0.6;
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+      }
+    }
 
-  const w = player.w || 22;
-  const h = player.h || 30;
-  const cx = player.x + w / 2;
-  const cy = player.y + h / 2;
-  const color = player.color || config.accent1 || '#00fff0';
-  const scale = player.dashing ? 1.4 : 1.0;
+    function drawPlayer() {
+      // guard against non-finite positions (stability)
+      if (!isFinite(player.x) || !isFinite(player.y)) return;
 
-  ctx.save();
+      const w = player.w || 22;
+      const h = player.h || 30;
+      const cx = player.x + w / 2;
+      const cy = player.y + h / 2;
+      const color = player.color || config.accent1 || '#00fff0';
+      const scale = player.dashing ? 1.4 : 1.0;
 
-  // --- Outer glow / aura ---
-  const r = Math.max(Math.max(w, h) * 0.6 * scale, 4);
-  const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r * 2);
-  grad.addColorStop(0, 'rgba(255,255,255,0.8)');
-  grad.addColorStop(0.3, color);
-  grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.save();
 
-  ctx.beginPath();
-  ctx.arc(cx, cy, r * 1.8, 0, Math.PI * 2);
-  ctx.fillStyle = grad;
-  ctx.fill();
+      // ensure radii are finite and non-negative
+      const base = Math.max(Math.max(w, h) * 0.6 * scale, 4);
+      const rOuter = Math.max(4, base * 1.8);
+      const rGrad = Math.max(4, base * 2);
 
-  // --- Solid comet core ---
-  ctx.beginPath();
-  ctx.arc(cx, cy, r * 0.6, 0, Math.PI * 2);
-  ctx.fillStyle = color;
-  ctx.globalAlpha = 0.95;
-  ctx.shadowColor = color;
-  ctx.shadowBlur = player.dashing ? 25 : 10;
-  ctx.fill();
+      // Outer glow / aura (safe radial gradient usage)
+      try {
+        const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, rGrad);
+        grad.addColorStop(0, 'rgba(255,255,255,0.85)');
+        grad.addColorStop(0.25, color);
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.beginPath();
+        ctx.arc(cx, cy, rOuter, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
+        ctx.fill();
+      } catch (e) {
+        // fallback: simple solid fill if gradient fails
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(cx, cy, 10, 0, Math.PI * 2);
+        ctx.fill();
+      }
 
-  ctx.restore();
-}
+      // Solid comet core
+      ctx.beginPath();
+      ctx.arc(cx, cy, base * 0.6, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.95;
+      ctx.shadowColor = color;
+      ctx.shadowBlur = player.dashing ? 25 : 10;
+      ctx.fill();
 
+      // small squash/rotation based on movement
+      ctx.restore();
+    }
 
-
-
-    function drawParticles(dt){ for(let i=particles.length-1;i>=0;i--){ const p = particles[i]; p.t += dt; p.x += p.vx * (dt/1000); p.y += p.vy * (dt/1000); const a = clamp(1 - p.t / p.life, 0, 1) * p.fade; ctx.globalAlpha = a; ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI*2); ctx.fill(); ctx.globalAlpha = 1; if(p.t >= p.life) particles.splice(i,1) } }
+    function drawParticles(dt){
+      for(let i=particles.length-1;i>=0;i--){
+        const p = particles[i];
+        p.t += dt;
+        p.x += p.vx * (dt/1000);
+        p.y += p.vy * (dt/1000);
+        const a = clamp(1 - p.t / p.life, 0, 1) * p.fade;
+        ctx.globalAlpha = a;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        if(p.t >= p.life) particles.splice(i,1)
+      }
+    }
 
     function updateHUD(){ statsLives.textContent = `Lives: ${lives}`; statsStage.textContent = `Stage: ${stageCounter + 1}`; statsScore.textContent = `Score: ${score}`; [statsLives, statsStage, statsScore].forEach(el => { el.classList.remove('pulse'); void el.offsetWidth; el.classList.add('pulse'); }) }
 
     // main loop
     let last = now();
-    function loop(){ if(!running) return; const t = now(); let dt = t - last; dt = clamp(dt, 0, 40); last = t; handleInput(dt); physics(dt); applyCamera(dt);
-      ctx.setTransform(1,0,0,1,0,0); ctx.fillStyle = '#020518'; ctx.fillRect(0,0,canvas.width,canvas.height);
-      camera.apply(); drawBackground(); drawLevel(); drawPlayer(); drawParticles(dt);
-      updateHUD(); requestAnimationFrame(loop);
+    function loop(){
+      if(!running) return;
+      const t = now();
+      let dt = t - last;
+      dt = clamp(dt, 0, 40);
+      last = t;
+      handleInput(dt);
+      physics(dt);
+      applyCamera(dt);
+
+      // clear screen (UI in screen coordinates)
+      ctx.setTransform(1,0,0,1,0,0);
+      ctx.fillStyle = '#020518';
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+
+      // apply camera transforms and draw world
+      camera.apply();
+      drawBackground();
+      drawLevel();
+      drawPlayer();
+      drawParticles(dt);
+
+      updateHUD();
+      requestAnimationFrame(loop);
     }
 
     // start
-    function startGame(){ hide(menu); showHUD(); canvas.classList.remove('hidden'); gameStarted=true; running=true; stageCounter=0; lives=5; score=0; level.tiles = genLevel(level.width, level.height, getDifficulty(stageCounter)); resetPlayer(level.spawn, false); last = now(); toast('Reach the green goal at the far right.'); loop(); }
+    function startGame(){
+      hide(menu); showHUD(); canvas.classList.remove('hidden');
+      gameStarted=true; running=true; stageCounter=0; lives=5; score=0;
+      level.tiles = genLevel(level.width, level.height, getDifficulty(stageCounter));
+      resetPlayer(level.spawn, false);
+      last = now(); toast('Reach the green goal at the far right.');
+      loop();
+    }
     startBtn.addEventListener('click', startGame);
 
     function showHUD(){ hud.style.display='flex'; controls.style.display='flex'; touchControls.style.display='flex'; }
@@ -392,7 +778,16 @@ function drawPlayer() {
     function applyPerfPreset(v){ if(v==='mobile'){ config.particleLimit = 140; config.starCount = 120 } else if(v==='high'){ config.particleLimit = 650; config.starCount = 420 } else { config.particleLimit = 350; config.starCount = 260 } }
 
     // touch binding
-    touchControls.querySelectorAll('.touch-btn').forEach(btn => { const code = btn.dataset.key; const press = () => { keys.add(code); keyOnce.add(code) }; const release = () => { keys.delete(code) }; btn.addEventListener('touchstart', e => { e.preventDefault(); press(); }); btn.addEventListener('touchend', e => { e.preventDefault(); release(); }); btn.addEventListener('mousedown', e => { e.preventDefault(); press(); }); btn.addEventListener('mouseup', e => { e.preventDefault(); release(); }); btn.addEventListener('mouseleave', release); });
+    touchControls.querySelectorAll('.touch-btn').forEach(btn => {
+      const code = btn.dataset.key;
+      const press = () => { keys.add(code); keyOnce.add(code) };
+      const release = () => { keys.delete(code) };
+      btn.addEventListener('touchstart', e => { e.preventDefault(); press(); });
+      btn.addEventListener('touchend', e => { e.preventDefault(); release(); });
+      btn.addEventListener('mousedown', e => { e.preventDefault(); press(); });
+      btn.addEventListener('mouseup', e => { e.preventDefault(); release(); });
+      btn.addEventListener('mouseleave', release);
+    });
 
     // ensure overlays hidden
     [winScreen, gameOver, scoreBoard, settings].forEach(el => el.style.display = 'none');
@@ -401,10 +796,14 @@ function drawPlayer() {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     const audio = AudioCtx ? new AudioCtx() : null;
     let ambientNode = null;
-    function startAmbient(){ if(!audio || !config.sfx) return; // simple ambient pad using oscillators + filter
+    function startAmbient(){ if(!audio || !config.sfx) return;
       const t = audio.currentTime;
       const g = audio.createGain(); g.gain.value = 0.06; g.connect(audio.destination);
-      const o1 = audio.createOscillator(); o1.type = 'sine'; o1.frequency.value = 110; const o2 = audio.createOscillator(); o2.type = 'sine'; o2.frequency.value = 165; const f = audio.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 800; o1.connect(f); o2.connect(f); f.connect(g); o1.start(t); o2.start(t); ambientNode = { o1, o2, f, g }; }
+      const o1 = audio.createOscillator(); o1.type = 'sine'; o1.frequency.value = 110;
+      const o2 = audio.createOscillator(); o2.type = 'sine'; o2.frequency.value = 165;
+      const f = audio.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 800;
+      o1.connect(f); o2.connect(f); f.connect(g); o1.start(t); o2.start(t); ambientNode = { o1, o2, f, g };
+    }
     function stopAmbient(){ if(!ambientNode) return; ambientNode.o1.stop(); ambientNode.o2.stop(); ambientNode.g.disconnect(); ambientNode = null }
     function playSfx(kind){ if(!config.sfx || !audio) return; const t = audio.currentTime; const g = audio.createGain(); g.gain.value = 0.12; g.connect(audio.destination);
       if(kind === 'jump'){ const o = audio.createOscillator(); o.type='sine'; o.frequency.setValueAtTime(420, t); o.frequency.exponentialRampToValueAtTime(720, t+0.12); o.connect(g); o.start(t); o.stop(t+0.12) }
@@ -424,6 +823,7 @@ function drawPlayer() {
 
     // expose for debugging
     window.NEON = { player, level, genLevel };
+
   });
   </script>
 </body>
